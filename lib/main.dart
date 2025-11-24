@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' as ui;
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:palette_generator/palette_generator.dart';
 
 void main() {
   runApp(const ImmersiveImageApp());
@@ -36,13 +38,12 @@ class _ImageScreenState extends State<ImageScreen> {
   Color _textColor = Colors.white;
   
   String? _imageUrl;
-  String? _previousImageUrl; // Cache previous URL
+  String? _previousImageUrl;
   bool _isLoading = false;
-  String? _errorMessage;
+  bool _isImageLoading = false;
   
-  // Cache untuk palette agar tidak perlu generate ulang
-  final Map<String, Color> _paletteCache = {};
-  bool _isPaletteGenerating = false;
+  // Cache sederhana untuk warna agar jika gambar sama tidak hitung ulang
+  final Map<String, Color> _colorCache = {};
 
   @override
   void initState() {
@@ -50,104 +51,152 @@ class _ImageScreenState extends State<ImageScreen> {
     _fetchNewImage();
   }
 
-  /// Fetch image URL from the API dengan timeout yang lebih pendek
+
   Future<void> _fetchNewImage() async {
-    if (_isLoading) return; // Prevent multiple simultaneous requests
+    if (_isLoading) return; 
     
     setState(() {
       _isLoading = true;
-      _errorMessage = null;
-      _previousImageUrl = _imageUrl; // Keep previous image visible
+      _isImageLoading = true;
+      _previousImageUrl = _imageUrl; 
     });
 
     try {
       final uri = Uri.parse('https://november7-730026606190.europe-west1.run.app/image');
-      
-      // Tambahkan timeout untuk menghindari waiting terlalu lama
-      final response = await http.get(uri).timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {
-          throw Exception('Connection timeout');
-        },
-      );
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
-        final newUrl = data['url'];
-        
-        setState(() {
-          _imageUrl = newUrl;
-          _isLoading = false;
-        });
+        String url = data['url'];
+    
+        if (mounted) {
+          setState(() {
+            _imageUrl = url;
+            _isLoading = false;
+          });
+        }
       } else {
-        throw Exception('Failed to load image: ${response.statusCode}');
+       
+        _handleRetry();
       }
     } catch (e) {
-      setState(() {
-        _isLoading = false;
-        _errorMessage = "Error loading image. Please try again.";
-      });
-      debugPrint("Error fetching image: $e");
+      debugPrint("API Error: $e");
+      _handleRetry();
     }
   }
 
-  /// Extract dominant color dengan optimasi
-  Future<void> _updatePalette(ImageProvider imageProvider) async {
-    // Cek apakah sudah ada di cache
-    final cacheKey = _imageUrl ?? '';
-    if (_paletteCache.containsKey(cacheKey)) {
+  
+  void _handleRetry() {
+    if (!mounted) return;
+   
+    Future.delayed(const Duration(seconds: 2), () {
       if (mounted) {
-        setState(() {
-          _backgroundColor = _paletteCache[cacheKey]!;
-          _textColor = _calculateTextColor(_backgroundColor);
-        });
+         setState(() => _isLoading = false); 
+         _fetchNewImage();
       }
+    });
+  }
+
+ 
+  Future<void> _updatePaletteFast(ImageProvider imageProvider, String url) async {
+    if (_colorCache.containsKey(url)) {
+      _animateToColor(_colorCache[url]!);
       return;
     }
 
-    // Prevent multiple palette generations
-    if (_isPaletteGenerating) return;
-    _isPaletteGenerating = true;
-
     try {
-      // Kurangi maximumColorCount untuk performa lebih cepat
-      final generator = await PaletteGenerator.fromImageProvider(
+     
+      final ImageProvider resizedProvider = ResizeImage(
         imageProvider,
-        maximumColorCount: 15, // Dikurangi dari 20 ke 10
-        timeout: const Duration(seconds: 5), // Tambahkan timeout
+        width: 50,
+        height: 50,
+        policy: ResizeImagePolicy.exact,
       );
+
+      // Resolve image stream
+      final ImageStream stream = resizedProvider.resolve(ImageConfiguration.empty);
+      final completer = Completer<ui.Image>();
+      late ImageStreamListener listener;
       
-      if (mounted && _imageUrl == cacheKey) {
-        final newColor = generator.mutedColor?.color ?? 
-                         generator.dominantColor?.color ?? 
-                         Colors.grey.shade900;
-        
-        // Simpan ke cache
-        _paletteCache[cacheKey] = newColor;
-        
-        setState(() {
-          _backgroundColor = newColor;
-          _textColor = _calculateTextColor(newColor);
-        });
-      }
+      listener = ImageStreamListener((ImageInfo info, bool _) {
+        completer.complete(info.image);
+        stream.removeListener(listener);
+      }, onError: (dynamic exception, StackTrace? stackTrace) {
+        stream.removeListener(listener);
+      });
+      
+      stream.addListener(listener);
+      
+      final ui.Image image = await completer.future;
+      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      
+      if (byteData == null) return;
+      
+     
+      final Color dominantColor = _calculateDominantColor(byteData.buffer.asUint8List());
+      
+      
+      _colorCache[url] = dominantColor;
+      _animateToColor(dominantColor);
+
     } catch (e) {
-      debugPrint("Error generating palette: $e");
-    } finally {
-      _isPaletteGenerating = false;
+      debugPrint("Color extraction failed: $e");
     }
   }
 
-  Color _calculateTextColor(Color bg) {
-    return ThemeData.estimateBrightnessForColor(bg) == Brightness.dark 
-        ? Colors.white 
-        : Colors.black;
+  void _animateToColor(Color color) {
+    if (!mounted) return;
+    setState(() {
+      _backgroundColor = color;
+      _textColor = ThemeData.estimateBrightnessForColor(color) == Brightness.dark 
+          ? Colors.white 
+          : Colors.black;
+      _isImageLoading = false; 
+    });
+  }
+
+ 
+  Color _calculateDominantColor(Uint8List pixels) {
+    final Map<int, int> colorCounts = {};
+    int maxCount = 0;
+    int dominantColorInt = 0xFF212121; 
+
+   
+    for (int i = 0; i < pixels.length; i += 4) {
+      final r = pixels[i];
+      final g = pixels[i + 1];
+      final b = pixels[i + 2];
+      final a = pixels[i + 3];
+
+      if (a < 128) continue; 
+      
+     
+      final quantizedR = (r ~/ 10) * 10;
+      final quantizedG = (g ~/ 10) * 10;
+      final quantizedB = (b ~/ 10) * 10;
+
+      final colorInt = (0xFF << 24) | (quantizedR << 16) | (quantizedG << 8) | quantizedB;
+      final currentCount = (colorCounts[colorInt] ?? 0) + 1;
+      colorCounts[colorInt] = currentCount;
+
+      if (currentCount > maxCount) {
+        maxCount = currentCount;
+        dominantColorInt = colorInt;
+      }
+    }
+
+   
+    final hsl = HSLColor.fromColor(Color(dominantColorInt));
+    final double newLightness = (hsl.lightness - 0.1).clamp(0.1, 0.9);
+    return hsl.withLightness(newLightness).toColor();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      
       body: AnimatedContainer(
-        duration: const Duration(milliseconds: 600), // Dikurangi dari 800ms
+        duration: const Duration(milliseconds: 500), 
         curve: Curves.easeInOut,
         color: _backgroundColor,
         width: double.infinity,
@@ -171,26 +220,6 @@ class _ImageScreenState extends State<ImageScreen> {
   }
 
   Widget _buildImageArea() {
-    if (_errorMessage != null) {
-      return Padding(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          children: [
-            Text(
-              _errorMessage!,
-              textAlign: TextAlign.center,
-              style: TextStyle(color: _textColor, fontSize: 16),
-            ),
-            const SizedBox(height: 16),
-            TextButton(
-              onPressed: _fetchNewImage,
-              child: Text('Retry', style: TextStyle(color: _textColor)),
-            ),
-          ],
-        ),
-      );
-    }
-
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24.0),
       child: AspectRatio(
@@ -209,34 +238,33 @@ class _ImageScreenState extends State<ImageScreen> {
           ),
           clipBehavior: Clip.antiAlias,
           child: _imageUrl == null
-              ? Center(
-                  child: CircularProgressIndicator(color: _textColor),
-                )
+              ? Center(child: CircularProgressIndicator(color: _textColor))
               : CachedNetworkImage(
-                  key: ValueKey(_imageUrl), // Force rebuild on URL change
+                  key: ValueKey(_imageUrl),
                   imageUrl: _imageUrl!,
                   fit: BoxFit.cover,
                   
-                  // Optimasi: gunakan memCacheWidth untuk resize otomatis
-                  // memCacheWidth: 800, // Resize to max 800px width
-                  // memCacheHeight: 800, // Resize to max 800px height
+                 
+                  memCacheWidth: 800, 
+                  memCacheHeight: 800,
                   
                   imageBuilder: (context, imageProvider) {
-                    // Update palette secara asynchronous
+                   
                     WidgetsBinding.instance.addPostFrameCallback((_) {
-                      _updatePalette(imageProvider);
+                      _updatePaletteFast(imageProvider, _imageUrl!);
                     });
                     return Image(image: imageProvider, fit: BoxFit.cover);
                   },
                   
                   placeholder: (context, url) => Stack(
                     children: [
-                      // Show previous image if available
+                      
                       if (_previousImageUrl != null && _previousImageUrl != url)
                         CachedNetworkImage(
                           imageUrl: _previousImageUrl!,
                           fit: BoxFit.cover,
-                          fadeInDuration: Duration.zero,
+                          memCacheWidth: 800,
+                          memCacheHeight: 800,
                         ),
                       Center(
                         child: CircularProgressIndicator(
@@ -247,22 +275,28 @@ class _ImageScreenState extends State<ImageScreen> {
                     ],
                   ),
                   
-                  errorWidget: (context, url, error) => Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.broken_image, size: 50, color: Colors.grey),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Failed to load',
-                          style: TextStyle(color: Colors.grey, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  ),
-                  
-                  fadeInDuration: const Duration(milliseconds: 300), // Lebih cepat
-                  fadeOutDuration: const Duration(milliseconds: 200),
+
+                  errorWidget: (context, url, error) {
+                   
+                    debugPrint("Image Load Error: $error. Retrying...");
+                    
+                   
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                       _handleRetry(); 
+                    });
+
+                    return Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.broken_image, size: 40, color: _textColor.withOpacity(0.5)),
+                          const SizedBox(height: 8),
+                          Text("Retrying...", style: TextStyle(color: _textColor.withOpacity(0.5), fontSize: 12))
+                        ],
+                      ),
+                    );
+                  },
+                  fadeInDuration: const Duration(milliseconds: 300),
                 ),
         ),
       ),
@@ -270,21 +304,23 @@ class _ImageScreenState extends State<ImageScreen> {
   }
 
   Widget _buildControls() {
+    final isButtonLoading = _isLoading || _isImageLoading;
+    
     return SizedBox(
       width: 200,
       height: 56,
       child: ElevatedButton(
-        onPressed: _isLoading ? null : _fetchNewImage,
+        onPressed: isButtonLoading ? null : _fetchNewImage,
         style: ElevatedButton.styleFrom(
           backgroundColor: _textColor.withOpacity(0.9),
           foregroundColor: _backgroundColor,
           elevation: 5,
-          disabledBackgroundColor: _textColor.withOpacity(0.5),
+          disabledBackgroundColor: _textColor.withOpacity(0.3),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(30),
           ),
         ),
-        child: _isLoading
+        child: isButtonLoading
             ? SizedBox(
                 width: 24,
                 height: 24,
@@ -299,11 +335,5 @@ class _ImageScreenState extends State<ImageScreen> {
               ),
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    _paletteCache.clear();
-    super.dispose();
   }
 }
