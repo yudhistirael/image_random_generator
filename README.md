@@ -3,7 +3,7 @@
 A minimalist Flutter application that fetches random images and adapts the UI color scheme in real-time based on the image's dominant colors. Built with performance and user experience in mind.
 
 <p align="center">
-  <img src="ScreenRecording2025-11-24at14.48.54-ezgif.com-video-to-gif-converter.gif" alt="App Demo" width="250" />
+  <img src="SS.gif" alt="App Demo" width="250" />
 </p>
 
 ## ✨ Key Features
