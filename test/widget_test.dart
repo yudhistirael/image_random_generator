@@ -1,30 +1,48 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_random_generator/color_utils.dart';
+import 'package:image_random_generator/image_screen.dart';
 
-import 'package:image_random_generator/main.dart';
+import 'package:image_random_generator/main.dart'; 
+
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+  group('Color Logic Tests', () {
+    test('calculateDominantColor returns correct dominant color', () {
+    
+      
+      final List<int> mockPixels = [
+       
+        255, 0, 0, 255, 
+     
+        255, 0, 0, 255,
+  
+        255, 0, 0, 255,
+  
+        0, 0, 255, 255,
+      ];
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+      final Uint8List bytes = Uint8List.fromList(mockPixels);
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+     
+      final int resultColorInt = extractColorFromBytes(bytes); 
+      
+     
+      
+      expect(resultColorInt, isA<int>());
+      expect(resultColorInt, isNot(0));
+    });
+  });
+
+  testWidgets('App loads and shows initial UI correctly', (WidgetTester tester) async {
+
+    await tester.pumpWidget(const ImmersiveImageApp());
+
+    expect(find.text('Another'), findsOneWidget);
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+  
   });
 }

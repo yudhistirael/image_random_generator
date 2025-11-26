@@ -1,6 +1,6 @@
 # 🎨 Immersive Random Image Viewer
 
-A minimalist Flutter application that fetches random images and adapts the UI color scheme in real-time based on the image's dominant colors. Built with performance and user experience in mind.
+A minimalist Flutter application that fetches random images and adapts the UI color scheme in real-time based on the image's dominant colors. Built with performance and user experience in mind. Implemented custom pixel-based color extraction algorithm using Isolates (compute) for performance, ensuring the UI thread never drops frames during calculation.
 
 <p align="center">
   <img src="SS.gif" alt="App Demo" width="250" />
